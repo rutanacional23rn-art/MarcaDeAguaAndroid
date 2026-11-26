@@ -37,7 +37,7 @@ import java.util.ArrayList;
 
 public class MainActivity extends Activity {
     private static final int PICK_PHOTOS = 10, PICK_LOGO = 11;
-    private static final int PREVIEW_MAX = 1600, EXPORT_MAX = 4096, LOGO_MAX = 2000;
+    private static final int PREVIEW_MAX = 1600, EXPORT_MAX = 4096, LOGO_MAX = 1600;
 
     // Estado
     private boolean vertical = true;
@@ -66,7 +66,7 @@ public class MainActivity extends Activity {
         logoY = prefs.getFloat("ly", .75f);
         String saved = prefs.getString("logoUri", null);
         if (saved != null) {
-            try { logoBmp = decode(Uri.parse(saved), LOGO_MAX); } catch (Exception ignored) { logoBmp = null; }
+            try { logoBmp = decodeLogo(Uri.parse(saved)); } catch (Exception ignored) { logoBmp = null; }
         }
         showStart();
     }
@@ -283,7 +283,7 @@ public class MainActivity extends Activity {
                 Uri u = data.getData();
                 if (u == null) return;
                 try { getContentResolver().takePersistableUriPermission(u, Intent.FLAG_GRANT_READ_URI_PERMISSION); } catch (Exception ignored) { }
-                Bitmap nb = decode(u, LOGO_MAX);
+                Bitmap nb = decodeLogo(u);
                 Bitmap old = logoBmp;
                 logoBmp = nb;
                 if (old != null) old.recycle();
@@ -383,6 +383,103 @@ public class MainActivity extends Activity {
             b = r;
         }
         return b;
+    }
+
+
+    // ---------- logo: quita el fondo exterior (blanco, gris, semitransparente) y recorta al círculo ----------
+    private Bitmap decodeLogo(Uri u) throws Exception {
+        Bitmap b = decode(u, LOGO_MAX);
+        try {
+            Bitmap c = cleanLogo(b);
+            if (c != b) b.recycle();
+            return c;
+        } catch (Throwable t) {
+            return b;
+        }
+    }
+
+    private boolean sameBg(int c, int ref, boolean refTransparent) {
+        int ca = Color.alpha(c);
+        if (refTransparent) return ca < 30;
+        if (Math.abs(ca - Color.alpha(ref)) > 30) return false;
+        return Math.abs(Color.red(c) - Color.red(ref)) <= 24
+                && Math.abs(Color.green(c) - Color.green(ref)) <= 24
+                && Math.abs(Color.blue(c) - Color.blue(ref)) <= 24;
+    }
+
+    private Bitmap cleanLogo(Bitmap src) {
+        int w = src.getWidth(), h = src.getHeight();
+        int[] px = new int[w * h];
+        src.getPixels(px, 0, w, 0, 0, w, h);
+        int ref = px[0];
+        boolean tr = Color.alpha(ref) < 30;
+        // si las esquinas no tienen el mismo color, el logo no tiene fondo uniforme: se deja igual
+        if (!sameBg(px[w - 1], ref, tr) || !sameBg(px[(h - 1) * w], ref, tr) || !sameBg(px[h * w - 1], ref, tr)) return src;
+
+        boolean[] bg = new boolean[w * h];
+        int[] q = new int[w * h];
+        int head = 0, tail = 0;
+        for (int x = 0; x < w; x++) {
+            int a = x, b = (h - 1) * w + x;
+            if (!bg[a] && sameBg(px[a], ref, tr)) { bg[a] = true; q[tail++] = a; }
+            if (!bg[b] && sameBg(px[b], ref, tr)) { bg[b] = true; q[tail++] = b; }
+        }
+        for (int y = 0; y < h; y++) {
+            int a = y * w, b = y * w + w - 1;
+            if (!bg[a] && sameBg(px[a], ref, tr)) { bg[a] = true; q[tail++] = a; }
+            if (!bg[b] && sameBg(px[b], ref, tr)) { bg[b] = true; q[tail++] = b; }
+        }
+        while (head < tail) {
+            int i = q[head++];
+            int x = i % w, y = i / w;
+            if (x > 0 && !bg[i - 1] && sameBg(px[i - 1], ref, tr)) { bg[i - 1] = true; q[tail++] = i - 1; }
+            if (x < w - 1 && !bg[i + 1] && sameBg(px[i + 1], ref, tr)) { bg[i + 1] = true; q[tail++] = i + 1; }
+            if (y > 0 && !bg[i - w] && sameBg(px[i - w], ref, tr)) { bg[i - w] = true; q[tail++] = i - w; }
+            if (y < h - 1 && !bg[i + w] && sameBg(px[i + w], ref, tr)) { bg[i + w] = true; q[tail++] = i + w; }
+        }
+
+        int minX = w, minY = h, maxX = -1, maxY = -1, count = 0;
+        for (int y = 0; y < h; y++) {
+            for (int x = 0; x < w; x++) {
+                if (!bg[y * w + x]) {
+                    count++;
+                    if (x < minX) minX = x;
+                    if (x > maxX) maxX = x;
+                    if (y < minY) minY = y;
+                    if (y > maxY) maxY = y;
+                }
+            }
+        }
+        if (count == 0) return src;
+        int bw = maxX - minX + 1, bh = maxY - minY + 1;
+        float fill = (float) count / (bw * bh);
+        boolean circle = bw >= 20 && Math.abs(bw - bh) <= 0.05f * Math.max(bw, bh) && fill > .70f && fill < .86f;
+
+        if (circle) {
+            int side = Math.min(bw, bh);
+            int ox = minX + (bw - side) / 2, oy = minY + (bh - side) / 2;
+            float r = side / 2f - 1.5f;
+            int[] out = new int[side * side];
+            for (int y = 0; y < side; y++) {
+                for (int x = 0; x < side; x++) {
+                    float dx = x + .5f - side / 2f, dy = y + .5f - side / 2f;
+                    float d = (float) Math.sqrt(dx * dx + dy * dy);
+                    int c = px[(oy + y) * w + (ox + x)];
+                    if (d <= r - .5f) out[y * side + x] = c;
+                    else if (d < r + .5f) out[y * side + x] = (Math.round(Color.alpha(c) * (r + .5f - d)) << 24) | (c & 0xFFFFFF);
+                    else out[y * side + x] = 0;
+                }
+            }
+            return Bitmap.createBitmap(out, side, side, Bitmap.Config.ARGB_8888);
+        }
+        int[] out = new int[bw * bh];
+        for (int y = 0; y < bh; y++) {
+            for (int x = 0; x < bw; x++) {
+                int i = (minY + y) * w + (minX + x);
+                out[y * bw + x] = bg[i] ? 0 : px[i];
+            }
+        }
+        return Bitmap.createBitmap(out, bw, bh, Bitmap.Config.ARGB_8888);
     }
 
     // ---------- exportación (misma geometría que la vista previa) ----------
