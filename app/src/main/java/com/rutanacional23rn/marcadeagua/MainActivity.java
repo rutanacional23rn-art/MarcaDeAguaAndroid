@@ -16,6 +16,7 @@ import android.graphics.Rect;
 import android.graphics.RectF;
 import android.media.ExifInterface;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.provider.MediaStore;
 import android.view.Gravity;
@@ -259,11 +260,26 @@ public class MainActivity extends Activity {
 
     // ---------- selección de archivos ----------
     private void pickPhotos() {
-        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-        i.setType("image/*");
-        i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
-        i.addCategory(Intent.CATEGORY_OPENABLE);
-        startActivityForResult(i, PICK_PHOTOS);
+        try {
+            Intent i;
+            if (Build.VERSION.SDK_INT >= 33) {
+                // Selector de fotos del sistema: cuadrícula de la galería, selección múltiple
+                i = new Intent(MediaStore.ACTION_PICK_IMAGES);
+                i.putExtra(MediaStore.EXTRA_PICK_IMAGES_MAX, MediaStore.getPickImagesMaxLimit());
+            } else {
+                i = new Intent(Intent.ACTION_GET_CONTENT);
+                i.setType("image/*");
+                i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+                i.addCategory(Intent.CATEGORY_OPENABLE);
+            }
+            startActivityForResult(i, PICK_PHOTOS);
+        } catch (Exception e) {
+            Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            i.setType("image/*");
+            i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true);
+            i.addCategory(Intent.CATEGORY_OPENABLE);
+            startActivityForResult(i, PICK_PHOTOS);
+        }
     }
 
     private void pickLogo() {
